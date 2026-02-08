@@ -26,6 +26,9 @@ class VoiceShockApp:
         self.root.geometry("900x750")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
+        # Set window icon
+        self.set_window_icon()
+        
         # Load configuration
         self.config_file = "config.json"
         self.load_config()
@@ -396,7 +399,7 @@ class VoiceShockApp:
         control_frame = ctk.CTkFrame(self.root)
         control_frame.pack(fill="x", padx=10, pady=10)
         
-        self.start_button = ctk.CTkButton(control_frame, text="Start Listening", 
+        self.start_button = ctk.CTkButton(control_frame, text="Start Listening :3", 
                                          command=self.toggle_listening,
                                          font=ctk.CTkFont(size=14, weight="bold"),
                                          height=40)
@@ -527,7 +530,7 @@ class VoiceShockApp:
     def stop_listening(self):
         """Stop the audio processing"""
         self.running = False
-        self.start_button.configure(text="Start Listening")
+        self.start_button.configure(text="Start Listening :3")
         self.status_label.configure(text="Status: Stopped")
         
         if self.stream:
@@ -850,16 +853,55 @@ class VoiceShockApp:
             # Run in separate thread
             threading.Thread(target=self.tray_icon.run, daemon=True).start()
         
+    def get_resource_path(self, relative_path):
+        """Get resource path for both development and PyInstaller execution"""
+        if getattr(sys, 'frozen', False):
+            # Running as PyInstaller executable
+            base_path = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+        else:
+            # Running in development
+            base_path = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(base_path, relative_path)
+    
+    def set_window_icon(self):
+        """Set the window icon from the .ico file"""
+        try:
+            icon_path = self.get_resource_path('myicon.ico')
+            if os.path.exists(icon_path):
+                self.root.iconbitmap(icon_path)
+            else:
+                print(f"Icon file not found at {icon_path}")
+        except Exception as e:
+            print(f"Error loading window icon: {e}")
+    
     def create_tray_icon(self):
-        """Create system tray icon"""
-        # Create a simple icon
-        width = 64
-        height = 64
-        image = Image.new('RGB', (width, height), color='black')
-        dc = ImageDraw.Draw(image)
-        dc.rectangle([8, 8, width-8, height-8], fill='blue')
-        dc.text((width//2-10, height//2-6), "VS", fill='white')
-        return image
+        """Create system tray icon from .ico file"""
+        try:
+            icon_path = self.get_resource_path('myicon.ico')
+            if os.path.exists(icon_path):
+                # Load icon from .ico file
+                image = Image.open(icon_path)
+                return image
+            else:
+                print(f"Icon file not found at {icon_path}, using fallback")
+                # Fallback: Create a simple icon
+                width = 64
+                height = 64
+                image = Image.new('RGB', (width, height), color='black')
+                dc = ImageDraw.Draw(image)
+                dc.rectangle([8, 8, width-8, height-8], fill='blue')
+                dc.text((width//2-10, height//2-6), "VS", fill='white')
+                return image
+        except Exception as e:
+            print(f"Error loading tray icon: {e}")
+            # Fallback: Create a simple icon
+            width = 64
+            height = 64
+            image = Image.new('RGB', (width, height), color='black')
+            dc = ImageDraw.Draw(image)
+            dc.rectangle([8, 8, width-8, height-8], fill='blue')
+            dc.text((width//2-10, height//2-6), "VS", fill='white')
+            return image
         
     def show_window(self):
         """Show window from tray"""
