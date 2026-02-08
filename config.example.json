@@ -14,7 +14,7 @@
         "silence_duration": 0.5,
         "state_reset_timeout": 5.0,
         "model_size": "tiny",
-        "loopback_enabled": False,
+        "loopback_enabled": false,
         "loopback_device": 0,
         "loopback_mix_ratio": 0.5
 }

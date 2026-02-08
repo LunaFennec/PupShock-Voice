@@ -17,7 +17,7 @@ import sys
 
 class VoiceShockApp:
     def __init__(self):
-        # Initialize main window
+        # Init main window
         ctk.set_appearance_mode("system")
         ctk.set_default_color_theme("dark-blue")
         
@@ -29,11 +29,11 @@ class VoiceShockApp:
         # Set window icon
         self.set_window_icon()
         
-        # Load configuration
+        # Load config
         self.config_file = "config.json"
         self.load_config()
         
-        # State variables
+        # Variables
         self.running = False
         self.model = None
         self.stream = None
@@ -53,13 +53,13 @@ class VoiceShockApp:
         # Audio level for VU meter
         self.current_audio_level = 0
         
-        # System tray
+        # Tray icon
         self.tray_icon = None
         
         # Build UI
         self.create_ui()
         
-        # Start VU meter update
+        # Start VU meter
         self.update_vu_meter()
         
     def load_config(self):
@@ -106,7 +106,7 @@ class VoiceShockApp:
             
     def create_ui(self):
         """Create the main UI"""
-        # Create notebook (tabbed interface)
+        # Create notebook
         self.notebook = ctk.CTkTabview(self.root)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
         
@@ -122,21 +122,21 @@ class VoiceShockApp:
         self.create_settings_tab()
         self.create_api_tab()
         
-        # Control buttons at bottom
+        # Add control buttons
         self.create_control_panel()
         
     def create_console_tab(self):
         """Create console output tab"""
         tab = self.notebook.tab("Console")
         
-        # Console output
+        # Add console output
         console_frame = ctk.CTkFrame(tab)
         console_frame.pack(fill="both", expand=True, padx=10, pady=10)
         
         ctk.CTkLabel(console_frame, text="Console Output", 
                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=5)
         
-        # Text widget with scrollbar
+        # Add text widget with scrollbar
         text_frame = ctk.CTkFrame(console_frame)
         text_frame.pack(fill="both", expand=True, pady=5)
         
@@ -149,7 +149,7 @@ class VoiceShockApp:
         self.console_text.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         
-        # Clear button
+        # Add clear button
         ctk.CTkButton(console_frame, text="Clear Console", 
                      command=self.clear_console).pack(pady=5)
         
@@ -164,7 +164,7 @@ class VoiceShockApp:
         ctk.CTkLabel(device_frame, text="Microphone Input Device", 
                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=5)
         
-        # Get audio devices (filter to MME on Windows)
+        # Get audio devices
         self.audio_devices = []
         host_apis = sd.query_hostapis()
         
@@ -177,7 +177,7 @@ class VoiceShockApp:
         
         for i, device in enumerate(sd.query_devices()):
             if device["max_input_channels"] > 0:
-                # Filter to MME devices on Windows, or show all on other platforms
+                # Filter to just MME devices, or all if none found
                 if mme_index is None or device['hostapi'] == mme_index:
                     self.audio_devices.append(f"{i}: {device['name']}")
         
@@ -190,7 +190,7 @@ class VoiceShockApp:
                                        command=self.on_device_change)
         device_menu.pack(pady=10, padx=20, fill="x")
         
-        # Loopback (Speaker) device selection
+        # System audio device selection
         loopback_frame = ctk.CTkFrame(tab)
         loopback_frame.pack(fill="x", padx=10, pady=10)
         
@@ -203,7 +203,7 @@ class VoiceShockApp:
                        variable=self.loopback_enabled_var,
                        command=self.on_loopback_toggle).pack(pady=5)
         
-        # Get loopback devices (look for Stereo Mix and WASAPI output devices)
+        # Get loopback devices
         self.loopback_devices = []
         
         # Find WASAPI host API index
@@ -213,27 +213,27 @@ class VoiceShockApp:
                 wasapi_index = i
                 break
         
-        # First, look for "Stereo Mix" or similar MME loopback devices
+        # Look for MME loopback devices
         for i, device in enumerate(sd.query_devices()):
             device_name = device['name'].lower()
             if device["max_input_channels"] > 0 and any(keyword in device_name for keyword in 
                 ['stereo mix', 'wave out', 'loopback', 'what u hear', 'what you hear', 'wave out mix']):
                 self.loopback_devices.append(f"{i}: {device['name']} (MME Loopback)")
         
-        # Add WASAPI output devices (can be used for loopback capture)
+        # Add WASAPI output devices
         if wasapi_index is not None:
             for i, device in enumerate(sd.query_devices()):
                 if device["max_output_channels"] > 0 and device['hostapi'] == wasapi_index:
                     self.loopback_devices.append(f"{i}: {device['name']} (WASAPI)")
         
-        # If still no devices found, show all MME input devices as fallback
+        # If no devices found list everything
         if not self.loopback_devices:
             for i, device in enumerate(sd.query_devices()):
                 if device["max_input_channels"] > 0:
                     if mme_index is None or device['hostapi'] == mme_index:
                         self.loopback_devices.append(f"{i}: {device['name']} (MME)")
         
-        # Fallback message if still nothing found
+        # Fallback message if nothing found
         if not self.loopback_devices:
             self.loopback_devices = ["0: No devices found - Check audio settings"]
         
@@ -270,7 +270,7 @@ class VoiceShockApp:
         
         # Info label
         info_label = ctk.CTkLabel(loopback_frame, 
-                                 text="Loopback system audio - Requiress stereo mix or WASAPI loopback device.\n If no loopback devices are found, try enabling 'Stereo Mix' in Windows Sound settings.",
+                                 text="Loopback System Audio - Requires stereo mix or WASAPI loopback device.\n If none are found, try enabling 'Stereo Mix' in Windows Sound settings.",
                                  font=ctk.CTkFont(size=10),
                                  text_color="gray",
                                  wraplength=550)
@@ -300,7 +300,7 @@ class VoiceShockApp:
         scroll_frame = ctk.CTkScrollableFrame(tab)
         scroll_frame.pack(fill="both", expand=True, padx=10, pady=10)
         
-        # Wake Word
+        # Wake word box
         wake_frame = ctk.CTkFrame(scroll_frame)
         wake_frame.pack(fill="x", pady=5, padx=5)
         ctk.CTkLabel(wake_frame, text="Wake Word:").pack(side="left", padx=5)
@@ -308,7 +308,7 @@ class VoiceShockApp:
         ctk.CTkEntry(wake_frame, textvariable=self.wake_word_var, 
                     width=200).pack(side="left", padx=5)
         
-        # Model Size
+        # Model Size selection
         model_frame = ctk.CTkFrame(scroll_frame)
         model_frame.pack(fill="x", pady=5, padx=5)
         ctk.CTkLabel(model_frame, text="Model Size:").pack(side="left", padx=5)
@@ -366,7 +366,7 @@ class VoiceShockApp:
         ctk.CTkLabel(frame, text="OpenShock API Configuration", 
                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
         
-        # API Token
+        # API Token box
         token_frame = ctk.CTkFrame(frame)
         token_frame.pack(fill="x", pady=10, padx=20)
         ctk.CTkLabel(token_frame, text="API Token:", width=100).pack(side="left", padx=5)
@@ -374,7 +374,7 @@ class VoiceShockApp:
         ctk.CTkEntry(token_frame, textvariable=self.api_token_var, 
                     show="*", width=400).pack(side="left", fill="x", expand=True, padx=5)
         
-        # Control ID
+        # Control ID box
         control_frame = ctk.CTkFrame(frame)
         control_frame.pack(fill="x", pady=10, padx=20)
         ctk.CTkLabel(control_frame, text="Control ID:", width=100).pack(side="left", padx=5)
@@ -461,7 +461,7 @@ class VoiceShockApp:
         self.console_text.insert(tk.END, formatted)
         self.console_text.see(tk.END)
         
-        # Also print to stdout
+        # Also print to standard output
         print(formatted.strip())
         
     def clear_console(self):
@@ -572,22 +572,22 @@ class VoiceShockApp:
             )
             self.stream.start()
             
-            # Start loopback stream if enabled
+            # Start system audio stream if enabled
             if self.config["loopback_enabled"]:
                 try:
                     loopback_index = self.config["loopback_device"]
                     loopback_info = sd.query_devices(loopback_index)
                     
-                    # Check if this is a WASAPI output device being used for loopback
+                    # Check if a WASAPI output device is being used for loopback
                     is_wasapi_output = (loopback_info["max_output_channels"] > 0 and 
                                        loopback_info["max_input_channels"] == 0)
                     
                     if is_wasapi_output:
-                        # WASAPI loopback mode - open output device as input
+                        # Open output device as input
                         self.log_message("Using WASAPI loopback mode")
                         loopback_rate = int(loopback_info['default_samplerate'])
                         
-                        # For WASAPI loopback, we open it as an input despite being an output device
+                        
                         self.loopback_stream = sd.InputStream(
                             samplerate=loopback_rate,
                             channels=1,
@@ -597,7 +597,7 @@ class VoiceShockApp:
                             callback=self.loopback_audio_callback
                         )
                     else:
-                        # Regular input device (Stereo Mix, etc.)
+                        # Regular input device
                         loopback_rate = int(loopback_info['default_samplerate'])
                         
                         self.loopback_stream = sd.InputStream(
@@ -639,7 +639,7 @@ class VoiceShockApp:
         
         audio_data = indata[:, 0].copy()
         
-        # If loopback is enabled, apply mic mix ratio (inverse of speaker ratio)
+        # If loopback is enabled, apply mic mix ratio
         if self.config["loopback_enabled"]:
             mic_ratio = 1.0 - self.config["loopback_mix_ratio"]
             audio_data = audio_data * mic_ratio
@@ -661,7 +661,7 @@ class VoiceShockApp:
         speaker_ratio = self.config["loopback_mix_ratio"]
         loopback_data = loopback_data * speaker_ratio
         
-        # Add to queue (will be mixed with mic audio)
+        # Add to queue
         self.audio_queue.put(loopback_data)
         
     def process_audio_chunk(self, chunk, native_rate):
@@ -859,7 +859,7 @@ class VoiceShockApp:
             # Running as PyInstaller executable
             base_path = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
         else:
-            # Running in development
+            # Running in dev
             base_path = os.path.dirname(os.path.abspath(__file__))
         return os.path.join(base_path, relative_path)
     
@@ -879,12 +879,12 @@ class VoiceShockApp:
         try:
             icon_path = self.get_resource_path('myicon.ico')
             if os.path.exists(icon_path):
-                # Load icon from .ico file
+                # Load icon
                 image = Image.open(icon_path)
                 return image
             else:
                 print(f"Icon file not found at {icon_path}, using fallback")
-                # Fallback: Create a simple icon
+                # Fallback icon
                 width = 64
                 height = 64
                 image = Image.new('RGB', (width, height), color='black')
@@ -894,7 +894,7 @@ class VoiceShockApp:
                 return image
         except Exception as e:
             print(f"Error loading tray icon: {e}")
-            # Fallback: Create a simple icon
+            # Fallback icon
             width = 64
             height = 64
             image = Image.new('RGB', (width, height), color='black')
