@@ -1,0 +1,20 @@
+{
+       "api_token": "",
+        "control_id": "",
+        "wake_word": "lightning bolt",
+        "audio_device": 0,
+        "max_intensity": 100,
+        "duration_ms": 1000,
+        "cooldown_seconds": 10,
+        "sample_rate": 16000,
+        "chunk_size": 512,
+        "rolling_seconds": 3,
+        "transcribe_interval": 0.8,
+        "silence_threshold": 0.01,
+        "silence_duration": 0.5,
+        "state_reset_timeout": 5.0,
+        "model_size": "tiny",
+        "loopback_enabled": False,
+        "loopback_device": 0,
+        "loopback_mix_ratio": 0.5
+}
