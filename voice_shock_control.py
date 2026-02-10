@@ -1,6 +1,6 @@
 import customtkinter as ctk
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import sounddevice as sd
 import numpy as np
 import requests
@@ -10,10 +10,32 @@ import re
 import threading
 import json
 import os
-from faster_whisper import WhisperModel
+from vosk import Model, KaldiRecognizer
 from pystray import Icon, Menu, MenuItem
 from PIL import Image, ImageDraw
 import sys
+import webbrowser
+import zipfile
+import urllib.request
+from word2number import w2n
+
+# App version
+VERSION = "1.0.0"
+GITHUB_REPO = "LunaFennec/PupShock-Voice"
+
+# Vosk model configurations
+VOSK_MODELS = {
+    "small": {
+        "name": "vosk-model-small-en-us-0.15",
+        "url": "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+        "size": "40 MB"
+    },
+    "large": {
+        "name": "vosk-model-en-us-0.22",
+        "url": "https://alphacephei.com/vosk/models/vosk-model-en-us-0.22.zip",
+        "size": "1.8 GB"
+    }
+}
 
 class VoiceShockApp:
     def __init__(self):
@@ -36,19 +58,17 @@ class VoiceShockApp:
         # Variables
         self.running = False
         self.model = None
+        self.recognizer = None
         self.stream = None
         self.loopback_stream = None
         self.audio_queue = queue.Queue()
-        self.rolling_buffer = np.zeros(0, dtype=np.float32)
         
         # Runtime state
         self.last_action_time = 0
-        self.last_transcribe_time = 0
         self.last_command_text = ""
         self.silence_start = None
         self.has_speech = False
         self.last_speech_time = None
-        self.command_armed = True
         
         # Audio level for VU meter
         self.current_audio_level = 0
@@ -56,14 +76,22 @@ class VoiceShockApp:
         # Tray icon
         self.tray_icon = None
         
+        # Update check flag
+        self.update_available = False
+        self.latest_version = None
+        self.download_url = None
+        
         # Build UI
         self.create_ui()
         
         # Start VU meter
         self.update_vu_meter()
         
+        # Check for updates in background
+        self.check_for_updates()
+        
     def load_config(self):
-        """Load configuration from file or use defaults"""
+        # Load default config and override with file if exists
         default_config = {
             "api_token": "",
             "control_id": "",
@@ -74,12 +102,10 @@ class VoiceShockApp:
             "cooldown_seconds": 10,
             "sample_rate": 16000,
             "chunk_size": 512,
-            "rolling_seconds": 3,
-            "transcribe_interval": 0.8,
             "silence_threshold": 0.01,
             "silence_duration": 0.5,
             "state_reset_timeout": 5.0,
-            "model_size": "tiny",
+            "model_size": "small",
             "loopback_enabled": False,
             "loopback_device": 0,
             "loopback_mix_ratio": 0.5
@@ -96,16 +122,126 @@ class VoiceShockApp:
         self.config = default_config
         
     def save_config(self):
-        """Save current configuration to file"""
+        # Save current config to file
         try:
             with open(self.config_file, 'w') as f:
                 json.dump(self.config, f, indent=4)
             self.log_message("Configuration saved")
         except Exception as e:
             self.log_message(f"Error saving config: {e}", level="ERROR")
+    
+    def check_for_updates(self):
+        # Check for updates thru github
+        def check():
+            try:
+                # Ping GitHub API for latest release
+                url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+                response = requests.get(url, timeout=5)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    latest_version = data.get('tag_name', '').lstrip('v')
+                    
+                    if self.is_newer_version(latest_version, VERSION):
+                        self.update_available = True
+                        self.latest_version = latest_version
+                        self.download_url = data.get('html_url', f"https://github.com/{GITHUB_REPO}/releases/latest")
+                        
+                        # Schedule UI update on main thread
+                        self.root.after(0, self.show_update_notification)
+                        self.log_message(f"Update available: v{latest_version}")
+                    else:
+                        self.log_message(f"You are running the latest version (v{VERSION})")
+                elif response.status_code == 404:
+                    # No releases found
+                    self.log_message("No releases found on GitHub")
+                else:
+                    self.log_message(f"Failed to check for updates: HTTP {response.status_code}", level="WARNING")
+                    
+            except requests.exceptions.RequestException as e:
+                # Network error - fail silently
+                self.log_message(f"Could not check for updates: {e}", level="WARNING")
+            except Exception as e:
+                self.log_message(f"Update check error: {e}", level="WARNING")
+        
+        # Run in background thread
+        update_thread = threading.Thread(target=check, daemon=True)
+        update_thread.start()
+    
+    def is_newer_version(self, latest, current):
+        # Compare versions
+        try:
+            latest_parts = [int(x) for x in latest.split('.')]
+            current_parts = [int(x) for x in current.split('.')]
+            
+            # Pad to same length
+            while len(latest_parts) < len(current_parts):
+                latest_parts.append(0)
+            while len(current_parts) < len(latest_parts):
+                current_parts.append(0)
+            
+            return latest_parts > current_parts
+        except:
+            return False
+    
+    def show_update_notification(self):
+        # Show update notif dialog
+        response = messagebox.askquestion(
+            "Update Available",
+            f"A new version is available!\n\n"
+            f"Current version: v{VERSION}\n"
+            f"Latest version: v{self.latest_version}\n\n"
+            f"Would you like to download the update?",
+            icon='info'
+        )
+        
+        if response == 'yes' and self.download_url:
+            webbrowser.open(self.download_url)
+    
+    def get_model_path(self):
+        # Get path to vosk model based on config
+        model_info = VOSK_MODELS.get(self.config["model_size"], VOSK_MODELS["small"])
+        model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", model_info["name"])
+        return model_dir
+    
+    def download_model(self, model_size):
+        # Download model if not present
+        model_info = VOSK_MODELS.get(model_size, VOSK_MODELS["small"])
+        model_dir = self.get_model_path()
+        
+        if os.path.exists(model_dir):
+            self.log_message(f"Model already downloaded: {model_info['name']}")
+            return True
+        
+        self.log_message(f"Downloading model: {model_info['name']} ({model_info['size']})")
+        self.log_message("This may take a while on first run...")
+        
+        try:
+            # Create models directory
+            os.makedirs(os.path.dirname(model_dir), exist_ok=True)
+            
+            # Download zip file
+            zip_path = model_dir + ".zip"
+            self.log_message("Downloading...")
+            urllib.request.urlretrieve(model_info["url"], zip_path)
+            
+            # Extract
+            self.log_message("Extracting model...")
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(os.path.dirname(model_dir))
+            
+            # Clean up zip
+            os.remove(zip_path)
+            
+            self.log_message("Model download complete!")
+            return True
+            
+        except Exception as e:
+            self.log_message(f"Failed to download model: {e}", level="ERROR")
+            return False
             
     def create_ui(self):
-        """Create the main UI"""
+        # Create main UI
         # Create notebook
         self.notebook = ctk.CTkTabview(self.root)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
@@ -126,7 +262,7 @@ class VoiceShockApp:
         self.create_control_panel()
         
     def create_console_tab(self):
-        """Create console output tab"""
+        # Create console tab
         tab = self.notebook.tab("Console")
         
         # Add console output
@@ -154,7 +290,7 @@ class VoiceShockApp:
                      command=self.clear_console).pack(pady=5)
         
     def create_audio_tab(self):
-        """Create audio device selection tab"""
+        # Create audio settings tab
         tab = self.notebook.tab("Audio")
         
         # Microphone device selection
@@ -293,12 +429,36 @@ class VoiceShockApp:
         self.status_label.pack(pady=5)
         
     def create_settings_tab(self):
-        """Create settings tab"""
+        # Create settings tab
         tab = self.notebook.tab("Settings")
         
         # Scrollable frame
         scroll_frame = ctk.CTkScrollableFrame(tab)
         scroll_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Version info at top
+        version_frame = ctk.CTkFrame(scroll_frame)
+        version_frame.pack(fill="x", pady=10, padx=5)
+        
+        version_label = ctk.CTkLabel(version_frame, 
+                                     text=f"PupShock Voice v{VERSION}",
+                                     font=ctk.CTkFont(size=14, weight="bold"))
+        version_label.pack(side="left", padx=10)
+        
+        if self.update_available:
+            update_btn = ctk.CTkButton(version_frame, 
+                                      text=f"Update Available (v{self.latest_version})",
+                                      command=lambda: webbrowser.open(self.download_url) if self.download_url else None,
+                                      fg_color="green",
+                                      hover_color="darkgreen",
+                                      width=200)
+            update_btn.pack(side="right", padx=10)
+        else:
+            check_update_btn = ctk.CTkButton(version_frame,
+                                            text="Check for Updates",
+                                            command=self.check_for_updates,
+                                            width=150)
+            check_update_btn.pack(side="right", padx=10)
         
         # Wake word box
         wake_frame = ctk.CTkFrame(scroll_frame)
@@ -314,18 +474,22 @@ class VoiceShockApp:
         ctk.CTkLabel(model_frame, text="Model Size:").pack(side="left", padx=5)
         self.model_var = ctk.StringVar(value=self.config["model_size"])
         ctk.CTkOptionMenu(model_frame, variable=self.model_var,
-                         values=["tiny", "base", "small", "medium", "large"]).pack(side="left", padx=5)
+                         values=["small", "large"]).pack(side="left", padx=5)
+        
+        # Model info label
+        model_info = ctk.CTkLabel(model_frame, 
+                                 text="(small=40MB, fast / large=1.8GB, accurate)",
+                                 font=ctk.CTkFont(size=10),
+                                 text_color="gray")
+        model_info.pack(side="left", padx=10)
         
         # Create sliders for numeric settings
         self.create_slider(scroll_frame, "Max Intensity (%)", "max_intensity", 0, 100, 1)
         self.create_slider(scroll_frame, "Duration (ms)", "duration_ms", 100, 5000, 100)
-        self.create_slider(scroll_frame, "Cooldown (seconds)", "cooldown_seconds", 1, 60, 1)
-        self.create_slider(scroll_frame, "Rolling Window (seconds)", "rolling_seconds", 1, 10, 1)
-        self.create_slider(scroll_frame, "Transcribe Interval (seconds)", "transcribe_interval", 
-                          0.1, 2.0, 0.1)
+        self.create_slider(scroll_frame, "Cooldown (sec)", "cooldown_seconds", 1, 60, 1)
         self.create_slider(scroll_frame, "Silence Threshold", "silence_threshold", 
                           0.001, 0.1, 0.001)
-        self.create_slider(scroll_frame, "Silence Duration (seconds)", "silence_duration", 
+        self.create_slider(scroll_frame, "Silence Duration (sec)", "silence_duration", 
                           0.1, 2.0, 0.1)
         
         # Save button
@@ -333,7 +497,7 @@ class VoiceShockApp:
                      command=self.save_settings).pack(pady=20)
         
     def create_slider(self, parent, label, config_key, min_val, max_val, step):
-        """Helper to create a labeled slider"""
+        # Helper for labelled slider
         frame = ctk.CTkFrame(parent)
         frame.pack(fill="x", pady=5, padx=5)
         
@@ -357,7 +521,7 @@ class VoiceShockApp:
         setattr(self, f"{config_key}_slider", slider)
         
     def create_api_tab(self):
-        """Create API configuration tab"""
+        # Create API config tab
         tab = self.notebook.tab("API")
         
         frame = ctk.CTkFrame(tab)
@@ -395,7 +559,7 @@ class VoiceShockApp:
                      width=200).pack(side="left", padx=5)
         
     def create_control_panel(self):
-        """Create control buttons at bottom"""
+        # Create control buttons at the bottom
         control_frame = ctk.CTkFrame(self.root)
         control_frame.pack(fill="x", padx=10, pady=10)
         
@@ -410,25 +574,25 @@ class VoiceShockApp:
                      height=40).pack(side="left", padx=5)
         
     def on_device_change(self, selection):
-        """Handle audio device change"""
+        # Handle audio device change
         device_index = int(selection.split(":")[0])
         self.config["audio_device"] = device_index
         self.log_message(f"Audio device changed to: {selection}")
         
     def on_loopback_toggle(self):
-        """Handle loopback enable/disable"""
+        # Handle loopback enable/disable
         self.config["loopback_enabled"] = self.loopback_enabled_var.get()
         status = "enabled" if self.config["loopback_enabled"] else "disabled"
         self.log_message(f"Speaker loopback {status}")
         
     def on_loopback_device_change(self, selection):
-        """Handle loopback device change"""
+        # Handle loopback device change
         device_index = int(selection.split(":")[0])
         self.config["loopback_device"] = device_index
         self.log_message(f"Loopback device changed to: {selection}")
         
     def save_settings(self):
-        """Save all settings from UI to config"""
+        # Save all settings
         self.config["wake_word"] = self.wake_word_var.get()
         self.config["model_size"] = self.model_var.get()
         self.config["api_token"] = self.api_token_var.get()
@@ -438,8 +602,7 @@ class VoiceShockApp:
         
         # Get slider values
         slider_keys = ["max_intensity", "duration_ms", "cooldown_seconds", 
-                      "rolling_seconds", "transcribe_interval", "silence_threshold", 
-                      "silence_duration"]
+                      "silence_threshold", "silence_duration"]
         
         for key in slider_keys:
             slider = getattr(self, f"{key}_slider")
@@ -448,13 +611,13 @@ class VoiceShockApp:
         self.save_config()
         
     def save_api_settings(self):
-        """Save API settings only"""
+        # Save API settings only
         self.config["api_token"] = self.api_token_var.get()
         self.config["control_id"] = self.control_id_var.get()
         self.save_config()
         
-    def log_message(self, message, level="INFO"):
-        """Add message to console"""
+    def log_message(self, message: str, level: str ="INFO") -> None:
+        # Add msg to console
         timestamp = time.strftime("%H:%M:%S")
         formatted = f"[{timestamp}] [{level}] {message}\n"
         
@@ -465,11 +628,11 @@ class VoiceShockApp:
         print(formatted.strip())
         
     def clear_console(self):
-        """Clear console output"""
+        # Clear console
         self.console_text.delete(1.0, tk.END)
         
     def update_vu_meter(self):
-        """Update VU meter display"""
+        # Update VU meter display
         if self.vu_canvas.winfo_exists():
             width = self.vu_canvas.winfo_width()
             height = self.vu_canvas.winfo_height()
@@ -505,14 +668,14 @@ class VoiceShockApp:
         self.root.after(50, self.update_vu_meter)
         
     def toggle_listening(self):
-        """Start/stop listening"""
+        # Start/stop listening
         if not self.running:
             self.start_listening()
         else:
             self.stop_listening()
             
     def start_listening(self):
-        """Start the audio processing"""
+        # Start audio processing
         if not self.config["api_token"] or not self.config["control_id"]:
             self.log_message("Please configure API token and Control ID first!", level="ERROR")
             self.notebook.set("API")
@@ -528,7 +691,7 @@ class VoiceShockApp:
         thread.start()
         
     def stop_listening(self):
-        """Stop the audio processing"""
+        # Stop audio processing
         self.running = False
         self.start_button.configure(text="Start Listening :3")
         self.status_label.configure(text="Status: Stopped")
@@ -546,12 +709,23 @@ class VoiceShockApp:
         self.log_message("Stopped listening")
         
     def processing_thread(self):
-        """Main processing thread"""
+        # Main audio processing thread
         try:
+            # Download model if needed
+            if not self.download_model(self.config["model_size"]):
+                self.log_message("Failed to download model, cannot start", level="ERROR")
+                self.root.after(0, self.stop_listening)
+                return
+            
             # Load model
             self.log_message(f"Loading {self.config['model_size']} model...")
-            self.model = WhisperModel(self.config["model_size"], 
-                                     device="cpu", compute_type="int8")
+            model_path = self.get_model_path()
+            self.model = Model(model_path)
+            
+            # Create recognizer with 16kHz sample rate
+            self.recognizer = KaldiRecognizer(self.model, 16000)
+            self.recognizer.SetWords(True)
+            
             self.log_message("Model loaded successfully")
             
             # Get device info
@@ -633,7 +807,7 @@ class VoiceShockApp:
             self.root.after(0, self.stop_listening)
             
     def audio_callback(self, indata, frames, time_info, status):
-        """Audio input callback"""
+        # Audio input callback
         if status:
             self.log_message(f"Audio status: {status}", level="WARNING")
         
@@ -651,7 +825,7 @@ class VoiceShockApp:
         self.current_audio_level = min(1.0, rms * 10)  # Scale for visibility
         
     def loopback_audio_callback(self, indata, frames, time_info, status):
-        """Loopback audio input callback"""
+        # Loopback audio callback
         if status:
             self.log_message(f"Loopback status: {status}", level="WARNING")
         
@@ -665,112 +839,88 @@ class VoiceShockApp:
         self.audio_queue.put(loopback_data)
         
     def process_audio_chunk(self, chunk, native_rate):
-        """Process a chunk of audio"""
-        # Compute RMS for silence detection
-        rms = np.sqrt(np.mean(chunk ** 2))
+        # Process a chunk of audio
+        # Skip if recognizer not ready
+        if not self.recognizer:
+            return
         
-        # Track silence periods
-        now = time.time()
-        is_silent = rms < self.config["silence_threshold"]
-        
-        if is_silent:
-            if self.silence_start is None:
-                self.silence_start = now
-        else:
-            self.silence_start = None
-            self.has_speech = True
-            self.last_speech_time = now
-        
-        # Timeout protection
-        if self.last_speech_time and (now - self.last_speech_time > self.config["state_reset_timeout"]):
-            self.reset_state()
-            self.command_armed = True
-        
-        # Resample and buffer audio
+        # Resample to 16kHz if needed
         chunk = self.resample_to_16k(chunk, native_rate)
-        self.rolling_buffer = np.concatenate((self.rolling_buffer, chunk))
         
-        # Keep only last ROLLING_SECONDS of audio
-        max_len = int(self.config["sample_rate"] * self.config["rolling_seconds"])
-        if len(self.rolling_buffer) > max_len:
-            self.rolling_buffer = self.rolling_buffer[-max_len:]
+        # Convert float32 to int16 for Vosk
+        audio_int16 = (chunk * 32767).astype(np.int16)
         
-        # Only transcribe after silence following speech, or at regular intervals
-        silence_elapsed = (now - self.silence_start) if self.silence_start else 0
-        time_since_last = now - self.last_transcribe_time
+        # Feed to Vosk recognizer
+        if self.recognizer.AcceptWaveform(audio_int16.tobytes()):
+            # Final result - only process complete results
+            result = json.loads(self.recognizer.Result())
+            text = result.get("text", "").lower().strip()
+            
+            if text:
+                self.process_transcription(text)
+                
+    def extract_intensity(self, text):
+        # Extract intensity value from text, either as digits or written words
+        match = re.search(r"\b(\d{1,3})\b", text)
+        if match:
+            return int(match.group(1))
         
-        should_transcribe = (
-            (self.has_speech and silence_elapsed > self.config["silence_duration"]) or
-            (self.command_armed and time_since_last > self.config["transcribe_interval"] and self.has_speech)
-        )
+        # Then convert written number words using word2number library
+        try:
+            # Extract all words that could be numbers
+            words = text.lower().split()
+            number_words = []
+            number_keywords = {'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+                              'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 
+                              'seventeen', 'eighteen', 'nineteen', 'twenty', 'thirty', 'forty', 'fifty',
+                              'sixty', 'seventy', 'eighty', 'ninety', 'hundred', 'and'}
+            
+            # Collect consecutive words that might form a number
+            for word in words:
+                if word in number_keywords:
+                    number_words.append(word)
+                elif number_words:
+                    # Try to convert accumulated words
+                    try:
+                        intensity = w2n.word_to_num(' '.join(number_words))
+                        return intensity
+                    except:
+                        number_words = []
+            
+            # Try remaining words
+            if number_words:
+                try:
+                    intensity = w2n.word_to_num(' '.join(number_words))
+                    return intensity
+                except:
+                    pass
+        except:
+            pass
         
-        if not should_transcribe:
-            return
-        
-        # Skip if buffer is mostly silence
-        buffer_rms = np.sqrt(np.mean(self.rolling_buffer ** 2))
-        if buffer_rms < self.config["silence_threshold"]:
-            self.has_speech = False
-            return
-        
-        self.last_transcribe_time = now
-        
-        # Transcribe
-        if self.model is None:
-            self.log_message("Model not loaded yet, unable to transcribe", level="WARNING")
-            return
-        
-        segments, _ = self.model.transcribe(
-            self.rolling_buffer,
-            language="en",
-            vad_filter=True,
-            beam_size=1
-        )
-        text = " ".join(seg.text.lower().strip() for seg in segments).strip()
-        
+        return None
+    
+    def process_transcription(self, text: str) -> None:
+        # Process transcribed text for wake word and commands
         # Skip empty results
         if not text:
             self.has_speech = False
-            return
-        
-        # Skip exact duplicates
-        if text == self.last_command_text:
-            return
-        
-        # Skip if new text is just an extension of previous
-        if self.last_command_text and text.startswith(self.last_command_text):
-            self.last_command_text = text
             return
         
         self.last_command_text = text
         self.log_message(f"Heard: {text}")
         
         # Check for wake word and command
-        if self.config["wake_word"] in text and self.command_armed:
-            match = re.search(r"\b(\d{1,3})\b", text)
-            if match:
-                intensity = int(match.group(1))
-                self.send_shock(intensity)
-                
-                # Disarm and clear
-                self.command_armed = False
+        if self.config["wake_word"] in text:
+            intensity = self.extract_intensity(text)
+            if intensity is not None:
+                self.send_shock(intensity) 
                 self.reset_state()
             else:
                 self.log_message("Wake word heard, no intensity")
-                self.has_speech = False
-        else:
-            self.has_speech = False
-        
-        # Re-arm on extended silence
-        if silence_elapsed > self.config["silence_duration"] * 2:
-            if not self.command_armed:
-                self.log_message("Re-arming on silence")
-            self.command_armed = True
-            self.has_speech = False
             
     def resample_to_16k(self, audio, src_rate):
-        """Resample audio to 16kHz"""
-        target_rate = self.config["sample_rate"]
+        # Resample to 16khz
+        target_rate = 16000
         if src_rate == target_rate:
             return audio
         duration = len(audio) / src_rate
@@ -780,18 +930,19 @@ class VoiceShockApp:
         return np.interp(x_new, x_old, audio).astype(np.float32)
         
     def reset_state(self):
-        """Reset all state variables"""
-        self.has_speech = False
-        self.silence_start = None
+        # Reset all state variables
         self.last_command_text = ""
         self.last_speech_time = None
-        self.rolling_buffer = np.zeros(0, dtype=np.float32)
+        # Reset Vosk recognizer for fresh state
+        if self.recognizer:
+            self.recognizer = KaldiRecognizer(self.model, 16000)
+            self.recognizer.SetWords(True)
         
-    def send_shock(self, intensity):
-        """Send shock command to API"""
+    def send_shock(self, intensity: int) -> None:
+        # Send shock command to API
         now = time.time()
         if now - self.last_action_time < self.config["cooldown_seconds"]:
-            self.log_message("Cooldown active, ignoring command", level="WARNING")
+            self.log_message("Command heard, in cooldown", level="WARNING")
             return
         
         intensity = max(0, min(intensity, self.config["max_intensity"]))
@@ -803,7 +954,7 @@ class VoiceShockApp:
                 "intensity": intensity,
                 "duration": int(self.config["duration_ms"])
             }],
-            "customName": "VoiceControl"
+            "customName": "PupShockVoice"
         }
         
         try:
@@ -812,13 +963,13 @@ class VoiceShockApp:
                 headers={
                     "OpenShockToken": self.config["api_token"],
                     "Content-Type": "application/json",
-                    "User-Agent": "OpenShockVoiceClient/1.0"
+                    "User-Agent": "PupShockVoice/1.0"
                 },
                 json=payload,
                 timeout=5
             )
             
-            self.log_message(f"Shock {intensity}% | HTTP {response.status_code}")
+            self.log_message(f"Shock {intensity}% - HTTP {response.status_code}")
             
             if response.ok:
                 self.last_action_time = now
@@ -829,7 +980,7 @@ class VoiceShockApp:
             self.log_message(f"Failed to send shock: {e}", level="ERROR")
             
     def test_api(self):
-        """Test API connection with 10% shock"""
+       # Test API by sending 10% shock
         if not self.config["api_token"] or not self.config["control_id"]:
             self.log_message("Please enter API token and Control ID first!", level="ERROR")
             return
@@ -838,7 +989,7 @@ class VoiceShockApp:
         self.send_shock(10)
         
     def minimize_to_tray(self):
-        """Minimize application to system tray"""
+        # Minimize app to system tray
         self.root.withdraw()
         
         if not self.tray_icon:
@@ -854,7 +1005,7 @@ class VoiceShockApp:
             threading.Thread(target=self.tray_icon.run, daemon=True).start()
         
     def get_resource_path(self, relative_path):
-        """Get resource path for both development and PyInstaller execution"""
+        # Get resource path for both development and PyInstaller execution
         if getattr(sys, 'frozen', False):
             # Running as PyInstaller executable
             base_path = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
@@ -863,8 +1014,18 @@ class VoiceShockApp:
             base_path = os.path.dirname(os.path.abspath(__file__))
         return os.path.join(base_path, relative_path)
     
+    def _create_fallback_icon(self):
+        # Create fallback icon if icon file is missing
+        width = 64
+        height = 64
+        image = Image.new('RGB', (width, height), color='black')
+        dc = ImageDraw.Draw(image)
+        dc.rectangle([8, 8, width-8, height-8], fill='blue')
+        dc.text((width//2-10, height//2-6), "VS", fill='white')
+        return image
+    
     def set_window_icon(self):
-        """Set the window icon from the .ico file"""
+        # Set window icon from file
         try:
             icon_path = self.get_resource_path('myicon.ico')
             if os.path.exists(icon_path):
@@ -875,7 +1036,7 @@ class VoiceShockApp:
             print(f"Error loading window icon: {e}")
     
     def create_tray_icon(self):
-        """Create system tray icon from .ico file"""
+        # Create tray icon from file
         try:
             icon_path = self.get_resource_path('myicon.ico')
             if os.path.exists(icon_path):
@@ -883,40 +1044,26 @@ class VoiceShockApp:
                 image = Image.open(icon_path)
                 return image
             else:
-                print(f"Icon file not found at {icon_path}, using fallback")
-                # Fallback icon
-                width = 64
-                height = 64
-                image = Image.new('RGB', (width, height), color='black')
-                dc = ImageDraw.Draw(image)
-                dc.rectangle([8, 8, width-8, height-8], fill='blue')
-                dc.text((width//2-10, height//2-6), "VS", fill='white')
-                return image
+                print(f"Icon file not found at {icon_path}")
+                return self._create_fallback_icon()
         except Exception as e:
             print(f"Error loading tray icon: {e}")
-            # Fallback icon
-            width = 64
-            height = 64
-            image = Image.new('RGB', (width, height), color='black')
-            dc = ImageDraw.Draw(image)
-            dc.rectangle([8, 8, width-8, height-8], fill='blue')
-            dc.text((width//2-10, height//2-6), "VS", fill='white')
-            return image
+            return self._create_fallback_icon()
         
     def show_window(self):
-        """Show window from tray"""
+        # Show window from tray
         self.root.deiconify()
         self.root.lift()
         self.root.focus_force()
         
     def quit_app(self):
-        """Quit application"""
+        # Quit application
         if self.tray_icon:
             self.tray_icon.stop()
         self.on_closing()
         
     def on_closing(self):
-        """Handle window close"""
+        # Handle window close
         if self.running:
             self.stop_listening()
         
@@ -929,7 +1076,7 @@ class VoiceShockApp:
         sys.exit(0)
         
     def run(self):
-        """Run the application"""
+        # Run application
         self.log_message("Application started")
         self.log_message(f"Available audio devices:")
         for device in self.audio_devices:
