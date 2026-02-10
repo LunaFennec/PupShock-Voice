@@ -95,16 +95,12 @@ class VoiceShockApp:
         default_config = {
             "api_token": "",
             "control_id": "",
-            "wake_word": "lightning bolt",
+            "wake_word": "shock",
             "audio_device": 0,
-            "max_intensity": 100,
+            "max_intensity": 40,
             "duration_ms": 1000,
             "cooldown_seconds": 10,
-            "sample_rate": 16000,
             "chunk_size": 512,
-            "silence_threshold": 0.01,
-            "silence_duration": 0.5,
-            "state_reset_timeout": 5.0,
             "model_size": "small",
             "loopback_enabled": False,
             "loopback_device": 0,
@@ -487,10 +483,6 @@ class VoiceShockApp:
         self.create_slider(scroll_frame, "Max Intensity (%)", "max_intensity", 0, 100, 1)
         self.create_slider(scroll_frame, "Duration (ms)", "duration_ms", 100, 5000, 100)
         self.create_slider(scroll_frame, "Cooldown (sec)", "cooldown_seconds", 1, 60, 1)
-        self.create_slider(scroll_frame, "Silence Threshold", "silence_threshold", 
-                          0.001, 0.1, 0.001)
-        self.create_slider(scroll_frame, "Silence Duration (sec)", "silence_duration", 
-                          0.1, 2.0, 0.1)
         
         # Save button
         ctk.CTkButton(scroll_frame, text="Save Settings", 
@@ -601,8 +593,7 @@ class VoiceShockApp:
         self.config["loopback_mix_ratio"] = self.mix_ratio_slider.get()
         
         # Get slider values
-        slider_keys = ["max_intensity", "duration_ms", "cooldown_seconds", 
-                      "silence_threshold", "silence_duration"]
+        slider_keys = ["max_intensity", "duration_ms", "cooldown_seconds"]
         
         for key in slider_keys:
             slider = getattr(self, f"{key}_slider")
@@ -616,7 +607,7 @@ class VoiceShockApp:
         self.config["control_id"] = self.control_id_var.get()
         self.save_config()
         
-    def log_message(self, message: str, level: str ="INFO") -> None:
+    def log_message(self, message, level="INFO"):
         # Add msg to console
         timestamp = time.strftime("%H:%M:%S")
         formatted = f"[{timestamp}] [{level}] {message}\n"
@@ -859,13 +850,13 @@ class VoiceShockApp:
             if text:
                 self.process_transcription(text)
                 
-    def extract_intensity(self, text):
+    def extract_intensity(self, text: str) -> int | None:
         # Extract intensity value from text, either as digits or written words
         match = re.search(r"\b(\d{1,3})\b", text)
         if match:
             return int(match.group(1))
         
-        # Then convert written number words using word2number library
+        # Convert written number words using word2number library
         try:
             # Extract all words that could be numbers
             words = text.lower().split()
@@ -883,7 +874,7 @@ class VoiceShockApp:
                     # Try to convert accumulated words
                     try:
                         intensity = w2n.word_to_num(' '.join(number_words))
-                        return intensity
+                        return int(intensity)
                     except:
                         number_words = []
             
@@ -891,7 +882,7 @@ class VoiceShockApp:
             if number_words:
                 try:
                     intensity = w2n.word_to_num(' '.join(number_words))
-                    return intensity
+                    return int(intensity)
                 except:
                     pass
         except:
@@ -899,7 +890,7 @@ class VoiceShockApp:
         
         return None
     
-    def process_transcription(self, text: str) -> None:
+    def process_transcription(self, text):
         # Process transcribed text for wake word and commands
         # Skip empty results
         if not text:
@@ -913,7 +904,7 @@ class VoiceShockApp:
         if self.config["wake_word"] in text:
             intensity = self.extract_intensity(text)
             if intensity is not None:
-                self.send_shock(intensity) 
+                self.send_shock(intensity)
                 self.reset_state()
             else:
                 self.log_message("Wake word heard, no intensity")
@@ -938,7 +929,7 @@ class VoiceShockApp:
             self.recognizer = KaldiRecognizer(self.model, 16000)
             self.recognizer.SetWords(True)
         
-    def send_shock(self, intensity: int) -> None:
+    def send_shock(self, intensity):
         # Send shock command to API
         now = time.time()
         if now - self.last_action_time < self.config["cooldown_seconds"]:
